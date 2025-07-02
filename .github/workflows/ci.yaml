@@ -1,4 +1,4 @@
-name: CI Pipeline
+name: CI
 
 on:
   push:
@@ -37,15 +37,4 @@ jobs:
 
     - name: Run tests
       run: |
-          poetry run coverage run -m pytest
-    
-    - name: Check coverage
-      run: |
-        s=$(poetry run coverage report | grep "^TOTAL")
-        p=$(echo "$s" | awk '{print $NF}' | sed 's/%//')
-        n=$((p))
-        if [ $n -lt 80 ]; then
-            exit 1
-        else
-            exit 0
-        fi 
+        poetry run pytest --cov=src --cov-report=term-missing --cov-fail-under=80 

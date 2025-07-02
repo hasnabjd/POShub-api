@@ -1,8 +1,8 @@
 import httpx
-import structlog
 from tenacity import retry, stop_after_attempt, wait_exponential
+from .logging_config import get_logger
 
-logger = structlog.get_logger()
+logger = get_logger(__name__)
 
 @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=10))
 async def safe_get(client: httpx.AsyncClient, url: str):
