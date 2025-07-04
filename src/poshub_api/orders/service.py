@@ -1,5 +1,6 @@
 from .schemas import OrderIn, OrderOut
 
+
 class OrderService:
     def __init__(self):
         self.orders = {}
@@ -9,4 +10,4 @@ class OrderService:
         return order
 
     async def get_order(self, order_id: str):
-        return self.orders.get(order_id) 
+        return self.orders.get(order_id)

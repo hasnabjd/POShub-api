@@ -1,0 +1,101 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  POSHub API - Application FastAPI déployée sur AWS Lambda avec Mangum
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        PYTHONPATH: /var/task/src
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Stage de déploiement (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # Fonction Lambda principale
+  PosHubApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-api-${Stage}
+      CodeUri: .
+      Handler: src.poshub_api.main.lambda_handler
+      Description: POSHub API - Application FastAPI avec authentification JWT
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          LOG_LEVEL: INFO
+          API_KEY_PARAM: /pos/api-key
+          AWS_REGION: !Ref AWS::Region
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: 
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pos/*"
+      Events:
+        # API Gateway pour toutes les routes
+        ApiGateway:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PosHubApiGateway
+            Path: /{proxy+}
+            Method: ANY
+        # Route racine pour le health check
+        RootApi:
+          Type: Api
+          Properties:
+            RestApiId: !Ref PosHubApiGateway
+            Path: /
+            Method: ANY
+
+  # API Gateway
+  PosHubApiGateway:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub poshub-api-gateway-${Stage}
+      StageName: !Ref Stage
+      Description: API Gateway pour POSHub API
+      Cors:
+        AllowMethods: "'GET,POST,PUT,DELETE,OPTIONS'"
+        AllowHeaders: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token,X-Correlation-ID'"
+        AllowOrigin: "'*'"
+      BinaryMediaTypes:
+        - "*/*"
+
+  # Rôle IAM pour CloudWatch Logs
+  PosHubApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/poshub-api-${Stage}
+      RetentionInDays: 30
+
+Outputs:
+  PosHubApiUrl:
+    Description: "URL de l'API POSHub"
+    Value: !Sub "https://${PosHubApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiUrl
+  
+  PosHubApiFunction:
+    Description: "ARN de la fonction Lambda POSHub API"
+    Value: !GetAtt PosHubApiFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-FunctionArn
+
+  HealthCheckUrl:
+    Description: "URL du health check"
+    Value: !Sub "https://${PosHubApiGateway}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/health" 

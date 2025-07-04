@@ -1,1 +1,1 @@
-# Tests package for POSHub API 
+# Tests package for POSHub API

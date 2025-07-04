@@ -1,19 +1,23 @@
-import structlog
 import logging
 import sys
-from typing import Any, Dict
 from contextvars import ContextVar
+from typing import Any, Dict
+
+import structlog
 
 # Context variable to store correlation ID
 correlation_id: ContextVar[str] = ContextVar("correlation_id", default="")
+
 
 def get_correlation_id() -> str:
     """Get the current correlation ID from context."""
     return correlation_id.get()
 
+
 def set_correlation_id(corr_id: str) -> None:
     """Set the correlation ID in context."""
     correlation_id.set(corr_id)
+
 
 def add_correlation_id(_, __, event_dict: Dict[str, Any]) -> Dict[str, Any]:
     """Add correlation ID to all log entries."""
@@ -21,6 +25,7 @@ def add_correlation_id(_, __, event_dict: Dict[str, Any]) -> Dict[str, Any]:
     if corr_id:
         event_dict["correlation_id"] = corr_id
     return event_dict
+
 
 def configure_logging():
     """Configure structured logging with correlation ID support."""
@@ -42,7 +47,7 @@ def configure_logging():
             structlog.processors.StackInfoRenderer(),
             structlog.processors.format_exc_info,
             add_correlation_id,  # Add correlation ID to all logs
-            structlog.processors.JSONRenderer()
+            structlog.processors.JSONRenderer(),
         ],
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
@@ -50,6 +55,7 @@ def configure_logging():
         cache_logger_on_first_use=True,
     )
 
+
 def get_logger(name: str = None) -> structlog.BoundLogger:
     """Get a structured logger with correlation ID support."""
-    return structlog.get_logger(name) 
+    return structlog.get_logger(name)
