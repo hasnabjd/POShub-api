@@ -1,0 +1,39 @@
+# Dockerfile pour le développement
+FROM python:3.11-slim
+
+# Installer les dépendances système
+RUN apt-get update && apt-get install -y \
+    gcc \
+    g++ \
+    curl \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Installer Poetry
+RUN pip install poetry
+
+# Configurer Poetry
+RUN poetry config virtualenvs.create false
+
+# Définir le répertoire de travail
+WORKDIR /app
+
+# Copier les fichiers de configuration
+COPY pyproject.toml poetry.lock ./
+
+# Installer toutes les dépendances (incluant dev)
+RUN poetry install
+
+# Copier le code source
+COPY . .
+
+# Exposer le port
+EXPOSE 8000
+
+# Variables d'environnement pour le développement
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+ENV ENVIRONMENT=development
+
+# Commande par défaut pour le développement
+CMD ["poetry", "run", "uvicorn", "src.poshub_api.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"] 

@@ -1,10 +1,22 @@
-# POSHub API
+# POSHub API - Serverless FastAPI
 
 FastAPI-based POS system API with external service integration.
 
+### 1. Construire l'application
+```bash
+sam build --template sam-min.yml
+```
 
-### test pour chapitre 3 : recap ->  
 
-#### l’intégration de FastAPI + Mangum + AWS SSM fonctionne, que les dépendances sont là, et que le projet est structuré correctement.
+# Tester la fonction Lambda localement
+```bash
+sam local invoke PosHubFunction --template sam-min.yml
+```
 
-![alt text](i.png)
+
+## 📦 Déploiement
+
+### Déploiement initial
+```bash
+sam deploy --template sam-min.yml --guided
+```
