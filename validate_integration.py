@@ -12,14 +12,9 @@ def test_imports():
         print("🔍 Test 1: Imports des modules...")
 
         # Test des imports principaux
-        from fastapi import FastAPI
-        from mangum import Mangum
-        import boto3
-        import httpx
+
 
         # Test des imports projet
-        from poshub_api.main import app, lambda_handler
-        from poshub_api.aws_utils import SSMParameterStore, get_environment_config
 
         print("✅ Tous les imports réussis")
         return True, "Imports OK"

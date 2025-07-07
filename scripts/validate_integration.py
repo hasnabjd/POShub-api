@@ -34,7 +34,6 @@ def test_imports() -> Tuple[bool, str]:
 
         # Test des imports principaux
 
-
         # Test des imports projet
 
         print("✅ Tous les imports réussis")

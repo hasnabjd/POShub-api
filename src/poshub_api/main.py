@@ -131,7 +131,7 @@ async def health_check():
 # des applications FastAPI dans un environnement serverless
 lambda_handler = Mangum(
     app,
-    lifespan="off",  # Désactive la gestion du lifespan 
+    lifespan="off",  # Désactive la gestion du lifespan
     api_gateway_base_path=None,  # Chemin de base pour API Gateway
     text_mime_types=[
         "application/json",
