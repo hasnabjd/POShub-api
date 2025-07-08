@@ -1,0 +1,177 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  POSHub API - REST API avec AWS::ApiGateway::RestApi
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.11
+    Environment:
+      Variables:
+        PYTHONPATH: /var/task/src
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Stage de déploiement (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # Fonction Lambda pour les Orders
+  OrderApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-orders-api-${Stage}
+      CodeUri: .
+      Handler: src.poshub_api.orders_main.lambda_handler
+      Description: POSHub Orders API - Fonction Lambda dédiée aux commandes
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          LOG_LEVEL: INFO
+          API_KEY_PARAM: /pos/api-key
+          AWS_REGION: !Ref AWS::Region
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: 
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pos/*"
+
+  # REST API Gateway (type WEBSERVICE)
+  PosHubRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub poshub-rest-api-${Stage}
+      Description: REST API POSHub avec AWS::ApiGateway::RestApi
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      BinaryMediaTypes:
+        - "*/*"
+
+  # Ressource /orders
+  OrdersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ParentId: !GetAtt PosHubRestApi.RootResourceId
+      PathPart: orders
+
+  # Méthode ANY pour /orders
+  OrdersMethodAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt OrderApiFunction.Arn
+
+  # Ressource proxy pour capturer les sous-routes de /orders
+  OrdersProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ParentId: !Ref OrdersResource
+      PathPart: "{proxy+}"
+
+  # Méthode ANY pour /orders/{proxy+}
+  OrdersProxyMethodAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt OrderApiFunction.Arn
+
+  # Permission pour API Gateway d'invoquer la fonction Lambda
+  OrderApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OrderApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${PosHubRestApi}/*/ANY/orders"
+
+  # Permission pour les sous-routes
+  OrderApiProxyInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OrderApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${PosHubRestApi}/*/ANY/orders/*"
+
+  # Déploiement de l'API
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - OrdersMethodAny
+      - OrdersProxyMethodAny
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      Description: !Sub "Déploiement POSHub API - ${Stage}"
+
+  # Stage de déploiement
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Stage
+      Description: !Sub "Stage ${Stage} pour POSHub API"
+      Variables:
+        Stage: !Ref Stage
+
+  # Log Group pour la fonction Orders
+  OrderApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/poshub-orders-api-${Stage}
+      RetentionInDays: 30
+
+Outputs:
+  RestApiUrl:
+    Description: "URL de la REST API POSHub"
+    Value: !Sub "https://${PosHubRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiUrl
+  
+  OrdersEndpoint:
+    Description: "URL de l'endpoint /orders"
+    Value: !Sub "https://${PosHubRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/orders"
+    Export:
+      Name: !Sub ${AWS::StackName}-OrdersEndpoint
+
+  OrderApiFunctionArn:
+    Description: "ARN de la fonction Lambda OrderApiFunction"
+    Value: !GetAtt OrderApiFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-OrderApiFunctionArn
+
+  RestApiId:
+    Description: "ID de la REST API"
+    Value: !Ref PosHubRestApi
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiId 

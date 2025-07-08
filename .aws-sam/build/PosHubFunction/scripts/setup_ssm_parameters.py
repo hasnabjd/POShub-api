@@ -119,6 +119,12 @@ def setup_poshub_parameters(
             "type": "String",
             "description": f"Nombre maximum de connexions HTTP - {stage}",
         },
+        {
+            "name": f"/pos/{stage}/queue-url",
+            "value": f"https://sqs.eu-north-1.amazonaws.com/ACCOUNT_ID/poshub-orders-{stage}-h",
+            "type": "String",
+            "description": f"URL de la queue SQS pour les commandes - {stage}",
+        },
     ]
 
     # Créer les paramètres
@@ -175,7 +181,7 @@ def main():
     )
 
     parser.add_argument(
-        "--region", default="eu-west-1", help="Région AWS (défaut: eu-west-1)"
+        "--region", default="eu-north-1", help="Région AWS (défaut: eu-north-1)"
     )
 
     args = parser.parse_args()

@@ -25,11 +25,29 @@ Resources:
         - python3.13
       RetentionPolicy: Delete
 
+  # SQS Queue pour les commandes
+  PosHubOrdersQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub poshub-orders-${Stage}-h
+      VisibilityTimeout: 30
+      MessageRetentionPeriod: 1209600  # 14 jours
+      ReceiveMessageWaitTimeSeconds: 20  # Long polling
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt PosHubOrdersDeadLetterQueue.Arn
+        maxReceiveCount: 3
+
+  # Dead Letter Queue pour les messages échoués
+  PosHubOrdersDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub poshub-orders-dlq-${Stage}-h
+      MessageRetentionPeriod: 1209600  # 14 jours
+
   # Rôle IAM pour la fonction Lambda
   PosHubExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub poshub-execution-role-${Stage}
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -56,6 +74,20 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*"
+        - PolicyName: SQSQueueAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:GetQueueAttributes
+                  - sqs:GetQueueUrl
+                Resource: 
+                  - !GetAtt PosHubOrdersQueue.Arn
+                  - !GetAtt PosHubOrdersDeadLetterQueue.Arn
 
   # Fonction Lambda principale
   PosHubFunction:
@@ -75,7 +107,7 @@ Resources:
           STAGE: !Ref Stage
           LOG_LEVEL: INFO
           API_KEY_PARAM: !Sub "/pos/${Stage}/api-key"
-          AWS_REGION: !Ref AWS::Region
+          QUEUE_URL_PARAM: !Sub "/pos/${Stage}/queue-url"
           PYTHONPATH: /var/task/src
       Events:
         ApiEvent:
@@ -94,9 +126,18 @@ Resources:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub "/pos/${Stage}/api-key"
-      Type: SecureString
+      Type: String
       Value: !Sub "test-api-key-${Stage}-changeme"
       Description: !Sub "Clé API pour POSHub - ${Stage}"
+
+  # Paramètre SSM pour l'URL de la queue SQS
+  QueueUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub "/pos/${Stage}/queue-url"
+      Type: String
+      Value: !Ref PosHubOrdersQueue
+      Description: !Sub "URL de la queue SQS pour les commandes - ${Stage}"
 
 Outputs:
   PosHubApiUrl:
@@ -121,4 +162,16 @@ Outputs:
     Description: ARN du rôle d'exécution
     Value: !GetAtt PosHubExecutionRole.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-ExecutionRoleArn" 
+      Name: !Sub "${AWS::StackName}-ExecutionRoleArn"
+  
+  PosHubOrdersQueueUrl:
+    Description: URL de la queue SQS pour les commandes
+    Value: !Ref PosHubOrdersQueue
+    Export:
+      Name: !Sub "${AWS::StackName}-OrdersQueueUrl"
+  
+  PosHubOrdersQueueArn:
+    Description: ARN de la queue SQS pour les commandes
+    Value: !GetAtt PosHubOrdersQueue.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-OrdersQueueArn"

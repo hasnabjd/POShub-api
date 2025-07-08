@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: POSHub SQS & DLQ System - Chapter 5
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.13
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues:
+    - dev
+    - staging
+    - prod
+    Description: Environment stage
+Resources:
+  OrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: poshub-orders-dlq-${Stage}
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName:
+        Fn::Sub: poshub-orders-${Stage}
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn:
+          Fn::GetAtt:
+          - OrderDLQ
+          - Arn
+        maxReceiveCount: 3
+  NewOrderLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: poshub-new-order-lambda-${Stage}
+      CodeUri: NewOrderLambdaFunction
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to handle order creation and publish messages
+      Environment:
+        Variables:
+          SQS_QUEUE_URL:
+            Ref: OrderQueue
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - sqs:SendMessage
+          Resource:
+            Fn::GetAtt:
+            - OrderQueue
+            - Arn
+    Metadata:
+      SamResourceId: NewOrderLambdaFunction
+  OrderProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName:
+        Fn::Sub: poshub-order-processor-${Stage}
+      CodeUri: OrderProcessorFunction
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to process orders from SQS
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue:
+              Fn::GetAtt:
+              - OrderQueue
+              - Arn
+            BatchSize: 10
+            Enabled: true
+            FunctionResponseTypes:
+            - ReportBatchItemFailures
+      Policies:
+      - Version: '2012-10-17'
+        Statement:
+        - Effect: Allow
+          Action:
+          - sqs:ReceiveMessage
+          - sqs:DeleteMessage
+          - sqs:GetQueueAttributes
+          Resource:
+            Fn::GetAtt:
+            - OrderQueue
+            - Arn
+    Metadata:
+      SamResourceId: OrderProcessorFunction
+Outputs:
+  OrderQueueUrl:
+    Description: URL de la queue SQS principale
+    Value:
+      Ref: OrderQueue
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-OrderQueueUrl
+  OrderDLQUrl:
+    Description: URL de la Dead Letter Queue
+    Value:
+      Ref: OrderDLQ
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-OrderDLQUrl
+  NewOrderLambdaArn:
+    Description: ARN de la fonction NewOrderLambda
+    Value:
+      Fn::GetAtt:
+      - NewOrderLambdaFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-NewOrderLambdaArn
+  OrderProcessorArn:
+    Description: ARN de la fonction OrderProcessor
+    Value:
+      Fn::GetAtt:
+      - OrderProcessorFunction
+      - Arn
+    Export:
+      Name:
+        Fn::Sub: ${AWS::StackName}-OrderProcessorArn

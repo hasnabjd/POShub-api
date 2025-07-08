@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Transform: AWS::Serverless-2016-10-31
 Description: >
-  POSHub REST API - API complète avec sécurisation, throttling et CORS
+  POSHub REST API - API complete avec securisation, throttling et CORS
 
 Globals:
   Function:
@@ -16,7 +16,7 @@ Parameters:
   Stage:
     Type: String
     Default: dev
-    Description: Stage de déploiement (dev, staging, prod)
+    Description: Stage de deploiement (dev, staging, prod)
     AllowedValues:
       - dev
       - staging
@@ -39,7 +39,7 @@ Resources:
       FunctionName: !Sub poshub-orders-api-${Stage}
       CodeUri: ../.
       Handler: rest-api.handlers.orders_main.lambda_handler
-      Description: POSHub Orders API - Fonction Lambda dédiée aux commandes
+      Description: POSHub Orders API - Fonction Lambda dediee aux commandes
       Environment:
         Variables:
           STAGE: !Ref Stage
@@ -74,7 +74,7 @@ Resources:
     Type: AWS::ApiGateway::RestApi
     Properties:
       Name: !Sub poshub-rest-api-${Stage}
-      Description: REST API POSHub avec sécurisation complète
+      Description: REST API POSHub avec securisation complete
       EndpointConfiguration:
         Types:
           - REGIONAL
@@ -130,7 +130,7 @@ Resources:
       ParentId: !GetAtt PosHubRestApi.RootResourceId
       PathPart: health
 
-  # Méthode GET pour /health (avec throttling)
+  # Methode GET pour /health (avec throttling)
   HealthMethodGet:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -145,7 +145,7 @@ Resources:
           - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt HealthApiFunction.Arn
 
-  # Méthode OPTIONS pour /health (CORS)
+  # Methode OPTIONS pour /health (CORS)
   HealthMethodOptions:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -180,7 +180,7 @@ Resources:
       ParentId: !GetAtt PosHubRestApi.RootResourceId
       PathPart: orders
 
-  # Méthode POST pour /orders (avec JWT et API Key)
+  # Methode POST pour /orders (avec JWT et API Key)
   OrdersMethodPost:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -197,7 +197,7 @@ Resources:
           - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt OrderApiFunction.Arn
 
-  # Méthode GET pour /orders (lecture libre)
+  # Methode GET pour /orders (lecture libre)
   OrdersMethodGet:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -212,7 +212,7 @@ Resources:
           - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
           - FunctionArn: !GetAtt OrderApiFunction.Arn
 
-  # Méthode OPTIONS pour /orders (CORS)
+  # Methode OPTIONS pour /orders (CORS)
   OrdersMethodOptions:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -247,7 +247,7 @@ Resources:
       ParentId: !Ref OrdersResource
       PathPart: "{proxy+}"
 
-  # Méthode ANY pour /orders/{proxy+}
+  # Methode ANY pour /orders/{proxy+}
   OrdersProxyMethodAny:
     Type: AWS::ApiGateway::Method
     Properties:
@@ -314,7 +314,7 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub "${PosHubRestApi}/*/*/orders*"
 
-  # Déploiement de l'API
+  # Deploiement de l'API
   ApiDeployment:
     Type: AWS::ApiGateway::Deployment
     DependsOn: 
@@ -326,9 +326,9 @@ Resources:
       - OrdersProxyMethodAny
     Properties:
       RestApiId: !Ref PosHubRestApi
-      Description: !Sub "Déploiement POSHub API - ${Stage}"
+      Description: !Sub "Deploiement POSHub API - ${Stage}"
 
-  # Stage de déploiement avec MethodSettings
+  # Stage de deploiement avec MethodSettings
   ApiStage:
     Type: AWS::ApiGateway::Stage
     Properties:
@@ -345,7 +345,7 @@ Resources:
           LoggingLevel: INFO
           MetricsEnabled: true
           DataTraceEnabled: true
-        # Throttling spécifique pour /health
+        # Throttling specifique pour /health
         - ResourcePath: "/health"
           HttpMethod: "GET"
           ThrottlingRateLimit: 50
@@ -369,6 +369,71 @@ Resources:
     Properties:
       LogGroupName: !Sub /aws/lambda/poshub-jwt-authorizer-${Stage}
       RetentionInDays: 30
+
+  # SQS Queue principale
+  OrderQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub poshub-orders-${Stage}
+      VisibilityTimeout: 30
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt OrderDLQ.Arn
+        maxReceiveCount: 3
+
+  # Dead Letter Queue
+  OrderDLQ:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub poshub-orders-dlq-${Stage}
+      VisibilityTimeout: 30
+
+  # Lambda pour creation de commandes
+  NewOrderLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-new-order-lambda-${Stage}
+      CodeUri: ../src/poshub_api/new_order_lambda/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to handle order creation and publish messages
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref OrderQueue
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !GetAtt OrderQueue.Arn
+
+  # Lambda pour traitement des commandes
+  OrderProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-order-processor-${Stage}
+      CodeUri: ../src/poshub_api/order_processor/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to process orders from SQS
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !GetAtt OrderQueue.Arn
+            BatchSize: 10
+            Enabled: true
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !GetAtt OrderQueue.Arn
 
 Outputs:
   RestApiUrl:
@@ -405,4 +470,16 @@ Outputs:
     Description: "ID du Usage Plan"
     Value: !Ref PosHubUsagePlan
     Export:
-      Name: !Sub ${AWS::StackName}-UsagePlanId 
+      Name: !Sub ${AWS::StackName}-UsagePlanId
+
+  OrderQueueUrl:
+    Description: "URL de la queue SQS principale"
+    Value: !Ref OrderQueue
+    Export:
+      Name: !Sub ${AWS::StackName}-OrderQueueUrl
+
+  OrderDLQUrl:
+    Description: "URL de la Dead Letter Queue"
+    Value: !Ref OrderDLQ
+    Export:
+      Name: !Sub ${AWS::StackName}-OrderDLQUrl 

@@ -1,0 +1,96 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: POSHub SQS & DLQ System - Chapter 5 (Using Existing Queues)
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.13
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    AllowedValues: [dev, staging, prod]
+    Description: Environment stage
+  
+  OrderQueueUrl:
+    Type: String
+    Default: "https://sqs.eu-north-1.amazonaws.com/471448382724/poshub-orders-dev-h"
+    Description: URL of the existing orders queue
+  
+  OrderDLQUrl:
+    Type: String
+    Default: "https://sqs.eu-north-1.amazonaws.com/471448382724/poshub-orders-dlq-dev-h"
+    Description: URL of the existing DLQ queue
+
+Resources:
+  # Lambda pour creation de commandes
+  NewOrderLambdaFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-new-order-lambda-${Stage}
+      CodeUri: ../src/poshub_api/new_order_lambda/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to handle order creation and publish messages
+      Environment:
+        Variables:
+          SQS_QUEUE_URL: !Ref OrderQueueUrl
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:SendMessage
+              Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:poshub-orders-${Stage}-h"
+
+  # Lambda pour traitement des commandes
+  OrderProcessorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-order-processor-${Stage}
+      CodeUri: ../src/poshub_api/order_processor/
+      Handler: lambda_function.lambda_handler
+      Runtime: python3.13
+      Description: Lambda function to process orders from SQS
+      Events:
+        SQSEvent:
+          Type: SQS
+          Properties:
+            Queue: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:poshub-orders-${Stage}-h"
+            BatchSize: 10
+            Enabled: true
+            FunctionResponseTypes:
+              - ReportBatchItemFailures
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - sqs:ReceiveMessage
+                - sqs:DeleteMessage
+                - sqs:GetQueueAttributes
+              Resource: !Sub "arn:aws:sqs:${AWS::Region}:${AWS::AccountId}:poshub-orders-${Stage}-h"
+
+Outputs:
+  OrderQueueUrl:
+    Description: "URL de la queue SQS principale (existante)"
+    Value: !Ref OrderQueueUrl
+
+  OrderDLQUrl:
+    Description: "URL de la Dead Letter Queue (existante)"
+    Value: !Ref OrderDLQUrl
+
+  NewOrderLambdaArn:
+    Description: "ARN de la fonction NewOrderLambda"
+    Value: !GetAtt NewOrderLambdaFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-NewOrderLambdaArn
+
+  OrderProcessorArn:
+    Description: "ARN de la fonction OrderProcessor"
+    Value: !GetAtt OrderProcessorFunction.Arn
+    Export:
+      Name: !Sub ${AWS::StackName}-OrderProcessorArn 

@@ -1,0 +1,408 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  POSHub REST API - API complète avec sécurisation, throttling et CORS
+
+Globals:
+  Function:
+    Timeout: 30
+    MemorySize: 512
+    Runtime: python3.13
+    Environment:
+      Variables:
+        PYTHONPATH: /var/task/src
+
+Parameters:
+  Stage:
+    Type: String
+    Default: dev
+    Description: Stage de déploiement (dev, staging, prod)
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+  
+  JwtIssuer:
+    Type: String
+    Default: "https://auth.poshub.internal"
+    Description: JWT Issuer URL
+  
+  JwtAudience:
+    Type: String
+    Default: "poshub-api"
+    Description: JWT Audience
+
+Resources:
+  OrderApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-orders-api-${Stage}
+      CodeUri: ../.
+      Handler: rest-api.handlers.orders_main.lambda_handler
+      Description: POSHub Orders API - Fonction Lambda dédiée aux commandes
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          LOG_LEVEL: INFO
+          API_KEY_PARAM: /pos/api-key
+          AWS_REGION: !Ref AWS::Region
+      Policies:
+        - Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: 
+                - !Sub "arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/pos/*"
+
+  # Fonction Lambda pour Health Check
+  HealthApiFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-health-api-${Stage}
+      CodeUri: ../.
+      Handler: rest-api.handlers.health_main.lambda_handler
+      Description: POSHub Health API - Fonction Lambda pour health check
+      Environment:
+        Variables:
+          STAGE: !Ref Stage
+          LOG_LEVEL: INFO
+
+  # REST API Gateway (type WEBSERVICE)
+  PosHubRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: !Sub poshub-rest-api-${Stage}
+      Description: REST API POSHub avec sécurisation complète
+      EndpointConfiguration:
+        Types:
+          - REGIONAL
+      BinaryMediaTypes:
+        - "*/*"
+      Policy:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: execute-api:Invoke
+            Resource: '*'
+
+  # JWT Authorizer
+  JwtAuthorizer:
+    Type: AWS::ApiGateway::Authorizer
+    Properties:
+      Name: !Sub poshub-jwt-authorizer-${Stage}
+      Type: JWT
+      RestApiId: !Ref PosHubRestApi
+      IdentitySource: method.request.header.Authorization
+      AuthorizerUri: !Sub 
+        - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+        - FunctionArn: !GetAtt JwtAuthorizerFunction.Arn
+
+  # Fonction Lambda pour JWT Authorizer
+  JwtAuthorizerFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub poshub-jwt-authorizer-${Stage}
+      CodeUri: ../.
+      Handler: rest-api.handlers.jwt_authorizer.lambda_handler
+      Description: JWT Authorizer pour POSHub API
+      Environment:
+        Variables:
+          JWT_ISSUER: !Ref JwtIssuer
+          JWT_AUDIENCE: !Ref JwtAudience
+
+  # Permission pour l'authorizer
+  JwtAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref JwtAuthorizerFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${PosHubRestApi}/authorizers/*"
+
+  # Ressource /health
+  HealthResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ParentId: !GetAtt PosHubRestApi.RootResourceId
+      PathPart: health
+
+  # Méthode GET pour /health (avec throttling)
+  HealthMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref HealthResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt HealthApiFunction.Arn
+
+  # Méthode OPTIONS pour /health (CORS)
+  HealthMethodOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref HealthResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  # Ressource /orders
+  OrdersResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ParentId: !GetAtt PosHubRestApi.RootResourceId
+      PathPart: orders
+
+  # Méthode POST pour /orders (avec JWT et API Key)
+  OrdersMethodPost:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: POST
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      ApiKeyRequired: true
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt OrderApiFunction.Arn
+
+  # Méthode GET pour /orders (lecture libre)
+  OrdersMethodGet:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt OrderApiFunction.Arn
+
+  # Méthode OPTIONS pour /orders (CORS)
+  OrdersMethodOptions:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersResource
+      HttpMethod: OPTIONS
+      AuthorizationType: NONE
+      Integration:
+        Type: MOCK
+        IntegrationResponses:
+          - StatusCode: 200
+            ResponseParameters:
+              method.response.header.Access-Control-Allow-Headers: "'Content-Type,X-Amz-Date,Authorization,X-Api-Key,X-Amz-Security-Token'"
+              method.response.header.Access-Control-Allow-Methods: "'GET,POST,OPTIONS'"
+              method.response.header.Access-Control-Allow-Origin: "'*'"
+            ResponseTemplates:
+              application/json: ''
+        RequestTemplates:
+          application/json: '{"statusCode": 200}'
+      MethodResponses:
+        - StatusCode: 200
+          ResponseParameters:
+            method.response.header.Access-Control-Allow-Headers: false
+            method.response.header.Access-Control-Allow-Methods: false
+            method.response.header.Access-Control-Allow-Origin: false
+
+  # Ressource proxy pour /orders/{proxy+}
+  OrdersProxyResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ParentId: !Ref OrdersResource
+      PathPart: "{proxy+}"
+
+  # Méthode ANY pour /orders/{proxy+}
+  OrdersProxyMethodAny:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      ResourceId: !Ref OrdersProxyResource
+      HttpMethod: ANY
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+          - FunctionArn: !GetAtt OrderApiFunction.Arn
+
+  # API Key
+  PosHubApiKey:
+    Type: AWS::ApiGateway::ApiKey
+    Properties:
+      Name: !Sub poshub-${Stage}-key
+      Description: !Sub API Key pour POSHub ${Stage}
+      Enabled: true
+      StageKeys:
+        - RestApiId: !Ref PosHubRestApi
+          StageName: !Ref ApiStage
+
+  # Usage Plan
+  PosHubUsagePlan:
+    Type: AWS::ApiGateway::UsagePlan
+    Properties:
+      UsagePlanName: !Sub poshub-usage-plan-${Stage}
+      Description: !Sub Usage plan pour POSHub ${Stage}
+      Quota:
+        Limit: 1000
+        Period: MONTH
+      Throttle:
+        RateLimit: 10
+        BurstLimit: 20
+      ApiStages:
+        - ApiId: !Ref PosHubRestApi
+          Stage: !Ref ApiStage
+
+  # Lier API Key au Usage Plan
+  PosHubUsagePlanKey:
+    Type: AWS::ApiGateway::UsagePlanKey
+    Properties:
+      KeyId: !Ref PosHubApiKey
+      KeyType: API_KEY
+      UsagePlanId: !Ref PosHubUsagePlan
+
+  # Permissions Lambda
+  HealthApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref HealthApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${PosHubRestApi}/*/GET/health"
+
+  OrderApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref OrderApiFunction
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub "${PosHubRestApi}/*/*/orders*"
+
+  # Déploiement de l'API
+  ApiDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: 
+      - HealthMethodGet
+      - HealthMethodOptions
+      - OrdersMethodPost
+      - OrdersMethodGet
+      - OrdersMethodOptions
+      - OrdersProxyMethodAny
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      Description: !Sub "Déploiement POSHub API - ${Stage}"
+
+  # Stage de déploiement avec MethodSettings
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    Properties:
+      RestApiId: !Ref PosHubRestApi
+      DeploymentId: !Ref ApiDeployment
+      StageName: !Ref Stage
+      Description: !Sub "Stage ${Stage} pour POSHub API"
+      Variables:
+        Stage: !Ref Stage
+      MethodSettings:
+        # Settings globaux
+        - ResourcePath: "/*"
+          HttpMethod: "*"
+          LoggingLevel: INFO
+          MetricsEnabled: true
+          DataTraceEnabled: true
+        # Throttling spécifique pour /health
+        - ResourcePath: "/health"
+          HttpMethod: "GET"
+          ThrottlingRateLimit: 50
+          ThrottlingBurstLimit: 10
+
+  # Log Groups
+  OrderApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/poshub-orders-api-${Stage}
+      RetentionInDays: 30
+
+  HealthApiLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/poshub-health-api-${Stage}
+      RetentionInDays: 30
+
+  JwtAuthorizerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/poshub-jwt-authorizer-${Stage}
+      RetentionInDays: 30
+
+Outputs:
+  RestApiUrl:
+    Description: "URL de la REST API POSHub"
+    Value: !Sub "https://${PosHubRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/"
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiUrl
+  
+  HealthEndpoint:
+    Description: "URL de l'endpoint /health"
+    Value: !Sub "https://${PosHubRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/health"
+    Export:
+      Name: !Sub ${AWS::StackName}-HealthEndpoint
+  
+  OrdersEndpoint:
+    Description: "URL de l'endpoint /orders"
+    Value: !Sub "https://${PosHubRestApi}.execute-api.${AWS::Region}.amazonaws.com/${Stage}/orders"
+    Export:
+      Name: !Sub ${AWS::StackName}-OrdersEndpoint
+
+  ApiKeyId:
+    Description: "ID de l'API Key"
+    Value: !Ref PosHubApiKey
+    Export:
+      Name: !Sub ${AWS::StackName}-ApiKeyId
+
+  RestApiId:
+    Description: "ID de la REST API"
+    Value: !Ref PosHubRestApi
+    Export:
+      Name: !Sub ${AWS::StackName}-RestApiId
+
+  UsagePlanId:
+    Description: "ID du Usage Plan"
+    Value: !Ref PosHubUsagePlan
+    Export:
+      Name: !Sub ${AWS::StackName}-UsagePlanId 

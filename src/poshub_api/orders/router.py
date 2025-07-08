@@ -1,4 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException
+from boto3 import client
 
 from poshub_api.auth import User, require_orders_read, require_orders_write
 from poshub_api.logging_config import get_logger
@@ -9,6 +10,7 @@ from .service import OrderService
 router = APIRouter(prefix="/orders", tags=["orders"])
 logger = get_logger(__name__)
 order_service = OrderService()
+sns_client = client('sns')  # Assuming SNS is used for publishing messages
 
 
 @router.post("/", response_model=OrderOut)
@@ -29,6 +31,14 @@ async def create_order(
             order_id=order.id,
             username=current_user.username,
         )
+        # Publish message to SNS topic
+        response = sns_client.publish(
+            TopicArn='arn:aws:sns:region:account-id:poshub-orders-dev-h',  # Replace with actual ARN
+            Message=str(order.dict()),
+            Subject='New Order Created'
+        )
+        message_id = response['MessageId']
+        logger.info("Message published to SNS", message_id=message_id)
         return result
     except Exception as e:
         logger.error(
